@@ -1,91 +1,73 @@
-import requests
-from urllib.parse import urlparse, parse_qs
-from flask import Flask, request, render_template
-
-app = Flask(__name__)
-
-def get_terabox_direct_link(share_url):
-    # Step 1: Extract share ID from URL
-    parsed = urlparse(share_url)
-    share_id = parse_qs(parsed.query).get('shareid', [None])[0]
-    if not share_id:
-        return "Invalid share URL (missing shareid parameter).", None
-
-    # Step 2: Fetch share metadata
-    api_url = f"https://www.terabox.com/api/share/getShareInfo?shareid={share_id}"
-    headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
-    }
-    response = requests.get(api_url, headers=headers)
-    if response.status_code != 200:
-        return "Failed to fetch share info (network error).", None
-
-    data = response.json()
-    if data['errno'] != 0:
-        return f"Share error: {data.get('errmsg', 'Unknown error')}", None
-
-    share_data = data['data']
-    uk = share_data['uk']
-    sign = share_data['sign']
-    timestamp = share_data['timestamp']
-    file_list = share_data['file_list']
-
-    if not file_list:
-        return "No files found in share.", None
-
-    # Assume first file (extend for multiple)
-    file_item = file_list[0]
-    fid = file_item['fs_id']
-    path = file_item.get('path', '')  # For encoded path if needed
-
-    # Step 3: Fetch download info
-    download_url = "https://www.terabox.com/rest/2.0/pcs/file"
-    params = {
-        'method': 'batch',
-        'app_id': '250528',
-        'ver': '4.0',
-        'format': 'json',
-        'channel': 'chunlei',
-        'clienttype': '0',
-        'web': '1',
-        'type': 'tmp',
-        'action': 'download',
-        'uk': uk,
-        'primaryid': '0',
-        'fid_list': f'[{fid}]',
-        'sign': sign,
-        'timestamp': timestamp,
-    }
-    response = requests.get(download_url, params=params, headers=headers)
-    if response.status_code != 200:
-        return "Failed to get download info.", None
-
-    dl_data = response.json()
-    if dl_data['errno'] != 0:
-        return f"Download error: {dl_data.get('errmsg', 'Unknown')}", None
-
-    try:
-        # Extract dlink and build full URL
-        dlink_info = dl_data['result']['list'][0]
-        dlink = dlink_info['dlink']
-        time_param = int(timestamp / 1000)  # Convert ms to s
-        encoded_path = requests.utils.quote(path) if path else ''
-        direct_link = f"{dlink}?fid={fid}&time={time_param}&type=nos&method=download&app_id=250528&path={encoded_path}&ver=4.0&sign={sign}&timestamp={timestamp}&uk={uk}"
-        return "Success! Direct link generated.", direct_link
-    except (KeyError, IndexError):
-        return "Failed to extract download link (may be private/protected).", None
-
-@app.route('/', methods=['GET', 'POST'])
-def index():
-    error = None
-    direct_link = None
-    if request.method == 'POST':
-        share_url = request.form.get('share_url', '').strip()
-        if share_url:
-            error, direct_link = get_terabox_direct_link(share_url)
-            if error == "Success! Direct link generated.":
-                error = None  # Hide success as error
-    return render_template('index.html', error=error, direct_link=direct_link)
-
-if __name__ == '__main__':
-    app.run(debug=True)
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Terabox Direct Link Generator</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+    <style>
+        body { background-color: #f8f9fa; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; }
+        .card { box-shadow: 0 4px 6px rgba(0,0,0,0.1); border: none; }
+        .btn-primary { background-color: #007bff; border: none; }
+        .btn-primary:hover { background-color: #0056b3; }
+        .result { word-break: break-all; background: #e9ecef; padding: 10px; border-radius: 5px; }
+        .loading { display: none; }
+    </style>
+</head>
+<body>
+    <div class="container mt-5">
+        <div class="row justify-content-center">
+            <div class="col-md-8">
+                <div class="card">
+                    <div class="card-header bg-primary text-white text-center">
+                        <h2><i class="fas fa-download"></i> Terabox Direct Link Generator</h2>
+                        <p class="mb-0">Paste your Terabox share URL to get a one-click download link!</p>
+                    </div>
+                    <div class="card-body">
+                        <form method="POST">
+                            <div class="mb-3">
+                                <label for="share_url" class="form-label"><i class="fas fa-link"></i> Terabox Share URL</label>
+                                <input type="url" class="form-control" id="share_url" name="share_url" placeholder="https://www.terabox.com/s/1...?shareid=..." required>
+                            </div>
+                            <button type="submit" class="btn btn-primary w-100" id="submit-btn">
+                                <span class="loading-spinner loading"><i class="fas fa-spinner fa-spin"></i> Generating...</span>
+                                <span class="default"><i class="fas fa-magic"></i> Generate Link</span>
+                            </button>
+                        </form>
+                        {% if error %}
+                            <div class="alert alert-warning mt-3" role="alert">
+                                <i class="fas fa-exclamation-triangle"></i> {{ error }}
+                            </div>
+                        {% endif %}
+                        {% if direct_link %}
+                            <div class="mt-4">
+                                <h5><i class="fas fa-check-circle text-success"></i> Success!</h5>
+                                <div class="result">
+                                    <strong>File Ready:</strong> <a href="{{ direct_link }}" target="_blank">{{ direct_link }}</a>
+                                </div>
+                                <button class="btn btn-outline-secondary mt-2" onclick="copyLink('{{ direct_link }}')">
+                                    <i class="fas fa-copy"></i> Copy Link
+                                </button>
+                            </div>
+                        {% endif %}
+                    </div>
+                    <div class="card-footer text-muted text-center">
+                        <small>Powered by Flask & Terabox API | For public shares only</small>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+    <script>
+        document.getElementById('submit-btn').addEventListener('click', function() {
+            this.querySelector('.loading').style.display = 'inline';
+            this.querySelector('.default').style.display = 'none';
+        });
+        function copyLink(link) {
+            navigator.clipboard.writeText(link).then(() => alert('Link copied!'));
+        }
+    </script>
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+</body>
+</html>
